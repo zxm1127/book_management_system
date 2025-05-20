@@ -1,0 +1,79 @@
+name: CITests
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 查看当前目录下内容
+        run: |
+          pwd
+          ls 
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.23.1'
+
+      - name: Build
+        run: go build -v ./...
+
+      - name: Run Tests
+        run: go test -v ./...
+
+      - name: install golangci-lint
+        run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+
+      - name: Run golangci-lint 静态检查-代码规范检查
+        run: golangci-lint run .
+
+      - name: Run gosec 安全扫描
+        run: |
+          go install github.com/securego/gosec/v2/cmd/gosec@latest
+          gosec -exclude=G104 .  # 排除特定规则检查
+
+      - name: Format check 代码格式化
+        run: |
+          test -z "$(gofmt -l .)"
+          
+      - name: Verify dependencies 依赖检查
+        run: |
+          go mod verify
+          go mod tidy -v
+          git diff --exit-code go.mod || (echo "go.mod未同步" && exit 1)
+          git diff --exit-code go.sum || (echo "go.sum校验和变更未提交" && exit 1)
+
+  deploy-and-test:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Start Server
+        run: |
+          nohup go run main.go & echo $! > server.pid
+          echo "Server starting..."
+
+      - name: Health check
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 5
+          retry_wait_seconds: 10
+          command: curl -f http://localhost:8080/
+
+      - name: Test API
+        run: |
+          curl -X GET http://localhost:8080//books | jq .
+          curl -X GET http://localhost:8080/books \
+            -H "Content-Type: application/json" \
+
+      - name: Stop Server
+        if: always()
+        run: kill $(cat server.pid) || true
